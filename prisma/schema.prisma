@@ -1,0 +1,57 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+
+model Employee {
+  id           String    @id @default(uuid())
+  tsUsername   String    @unique // Their Windows/TSplus login name
+  fullName     String
+  department   String?
+  idleLimit    Int       @default(900)    // Seconds before forced logoff (default 15 min)
+  forceLogoff  Boolean   @default(false)  // HR "Remote Kill" button
+  createdAt    DateTime  @default(now())
+  
+  // Relations
+  sessions     Session[]
+}
+
+model Session {
+  id          String     @id @default(uuid())
+  employeeId  String
+  loginTime   DateTime   @default(now())
+  logoutTime  DateTime?  // Null means they are currently logged in
+  
+  // Relations
+  employee    Employee   @relation(fields: [employeeId], references: [id])
+  idleLogs    IdleLog[]
+}
+
+model IdleLog {
+  id               String   @id @default(uuid())
+  sessionId        String
+  recordedAt       DateTime @default(now()) // The exact minute this was recorded
+  idleDurationSecs Int      // How many seconds they had been idle at this exact moment
+  
+  // Relations
+  session          Session  @relation(fields: [sessionId], references: [id])
+}
+
+model WebLog {
+  id          String   @id @default(uuid())
+  tsUsername  String   // Matches the username from the C# agent
+  url         String
+  createdAt   DateTime @default(now())
+
+  // Create a relation to your Employee table if you want, 
+  // or just filter by tsUsername later.
+}
