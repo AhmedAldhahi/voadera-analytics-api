@@ -108,6 +108,7 @@ export class TrackingController {
         orderBy: {
           createdAt: 'desc', // Newest links at the top
         },
+        take: 1000, // Safety limit: don't crash if there are 50,000 logs
       });
 
       return { status: 'Success', data: logs };

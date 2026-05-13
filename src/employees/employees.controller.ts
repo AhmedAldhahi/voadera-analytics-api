@@ -40,56 +40,62 @@ export class EmployeesController {
   // 📊 GET /employees (Used by the React Dashboard)
   @Get()
   async getDashboardData(@Query('start') startStr?: string, @Query('end') endStr?: string) {
-    const start = startStr ? new Date(startStr) : new Date(new Date().setHours(0, 0, 0, 0));
-    const end = endStr ? new Date(endStr) : new Date(new Date().setHours(23, 59, 59, 999));
+    try {
+      const start = startStr ? new Date(startStr) : new Date(new Date().setHours(0, 0, 0, 0));
+      const end = endStr ? new Date(endStr) : new Date(new Date().setHours(23, 59, 59, 999));
 
-    const employees = await this.prisma.employee.findMany({
-      include: {
-        sessions: {
-          where: { loginTime: { gte: start, lte: end } },
-          include: { idleLogs: true },
+      const employees = await this.prisma.employee.findMany({
+        include: {
+          sessions: {
+            where: { loginTime: { gte: start, lte: end } },
+            include: { idleLogs: true },
+          },
         },
-      },
-    });
-
-    const formatTime = (totalSeconds: number) => {
-      const hrs = Math.floor(totalSeconds / 3600);
-      const mins = Math.floor((totalSeconds % 3600) / 60);
-      const secs = Math.floor(totalSeconds % 60);
-      return `${hrs}h ${mins}m ${secs}s`;
-    };
-
-    return employees.map((emp) => {
-      let totalSessionSeconds = 0;
-      let totalIdleSeconds = 0;
-      let longestIdleSeconds = 0;
-
-      emp.sessions.forEach((session) => {
-        const sessionEnd = session.logoutTime ? session.logoutTime.getTime() : Date.now();
-        const sessionStart = session.loginTime.getTime();
-        totalSessionSeconds += (sessionEnd - sessionStart) / 1000;
-
-        session.idleLogs.forEach((log) => {
-          totalIdleSeconds += log.idleDurationSecs;
-          if (log.idleDurationSecs > longestIdleSeconds) {
-            longestIdleSeconds = log.idleDurationSecs;
-          }
-        });
       });
 
-      const activeSeconds = Math.max(0, totalSessionSeconds - totalIdleSeconds);
-
-      return {
-        id: emp.id,
-        windowsId: emp.tsUsername,
-        name: emp.fullName,
-        department: emp.department || 'Unassigned',
-        totalTime: formatTime(totalSessionSeconds),
-        activeTime: formatTime(activeSeconds),
-        idleTime: formatTime(totalIdleSeconds),
-        longestIdle: formatTime(longestIdleSeconds),
+      const formatTime = (totalSeconds: number) => {
+        const hrs = Math.floor(totalSeconds / 3600);
+        const mins = Math.floor((totalSeconds % 3600) / 60);
+        const secs = Math.floor(totalSeconds % 60);
+        return `${hrs}h ${mins}m ${secs}s`;
       };
-    });
+
+      return employees.map((emp) => {
+        let totalSessionSeconds = 0;
+        let totalIdleSeconds = 0;
+        let longestIdleSeconds = 0;
+
+        emp.sessions.forEach((session) => {
+          const sessionEnd = session.logoutTime ? session.logoutTime.getTime() : Date.now();
+          const sessionStart = session.loginTime.getTime();
+          totalSessionSeconds += (sessionEnd - sessionStart) / 1000;
+
+          session.idleLogs.forEach((log) => {
+            totalIdleSeconds += log.idleDurationSecs;
+            if (log.idleDurationSecs > longestIdleSeconds) {
+              longestIdleSeconds = log.idleDurationSecs;
+            }
+          });
+        });
+
+        const activeSeconds = Math.max(0, totalSessionSeconds - totalIdleSeconds);
+
+        return {
+          id: emp.id,
+          windowsId: emp.tsUsername,
+          name: emp.fullName,
+          department: emp.department || 'Unassigned',
+          totalTime: formatTime(totalSessionSeconds),
+          activeTime: formatTime(activeSeconds),
+          idleTime: formatTime(totalIdleSeconds),
+          longestIdle: formatTime(longestIdleSeconds),
+        };
+      });
+    } catch (error) {
+      console.error('Dashboard Data Error:', error);
+      // Return an empty array instead of crashing with 500
+      return [];
+    }
   }
 
   // ✏️ PATCH /employees/:id (Used by HR to edit a user)
