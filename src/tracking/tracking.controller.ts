@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Get, Param } from '@nestjs/common';
+import { Controller, Post, Body, Get, Param, Query } from '@nestjs/common';
 import { PrismaService } from '../prisma.service'; 
 
 @Controller()
@@ -87,14 +87,15 @@ export class TrackingController {
 
   // 🔍 GET /weblogs/:username (Used by HR Modal)
   @Get('weblogs/:username')
-  async getEmployeeWebLogs(@Param('username') username: string) {
+  async getEmployeeWebLogs(
+    @Param('username') username: string,
+    @Query('start') startStr?: string,
+    @Query('end') endStr?: string,
+  ) {
     try {
-      // Get the start and end of the current day
-      const startOfDay = new Date();
-      startOfDay.setHours(0, 0, 0, 0);
-      
-      const endOfDay = new Date();
-      endOfDay.setHours(23, 59, 59, 999);
+      // Use client-provided dates to avoid timezone mismatch (server is UTC, users are UTC+3)
+      const startOfDay = startStr ? new Date(startStr) : new Date(new Date().setHours(0, 0, 0, 0));
+      const endOfDay = endStr ? new Date(endStr) : new Date(new Date().setHours(23, 59, 59, 999));
 
       // Fetch logs for this user, ordered by newest first
       const logs = await this.prisma.webLog.findMany({

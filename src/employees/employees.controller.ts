@@ -18,6 +18,27 @@ export class EmployeesController {
         });
       }
 
+      // --- FIX Bug #1: Auto-close stale sessions (>24h old) ---
+      const staleThreshold = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const staleSessions = await this.prisma.session.findMany({
+        where: {
+          employeeId: employee.id,
+          logoutTime: null,
+          loginTime: { lt: staleThreshold },
+        },
+      });
+
+      if (staleSessions.length > 0) {
+        console.log(`🧹 [STALE] Closing ${staleSessions.length} stale session(s) for ${username}`);
+        await this.prisma.session.updateMany({
+          where: {
+            id: { in: staleSessions.map(s => s.id) },
+          },
+          data: { logoutTime: new Date() },
+        });
+      }
+
+      // Find or create a fresh session
       let session = await this.prisma.session.findFirst({
         where: { employeeId: employee.id, logoutTime: null },
       });
@@ -44,10 +65,18 @@ export class EmployeesController {
       const start = startStr ? new Date(startStr) : new Date(new Date().setHours(0, 0, 0, 0));
       const end = endStr ? new Date(endStr) : new Date(new Date().setHours(23, 59, 59, 999));
 
+      // --- FIX Bug #3: Include sessions that OVERLAP with the date range ---
+      // A session overlaps if: loginTime <= end AND (logoutTime >= start OR logoutTime IS NULL)
       const employees = await this.prisma.employee.findMany({
         include: {
           sessions: {
-            where: { loginTime: { gte: start, lte: end } },
+            where: {
+              loginTime: { lte: end },
+              OR: [
+                { logoutTime: { gte: start } },
+                { logoutTime: null },
+              ],
+            },
             include: { idleLogs: true },
           },
         },
@@ -60,20 +89,35 @@ export class EmployeesController {
         return `${hrs}h ${mins}m ${secs}s`;
       };
 
+      const startMs = start.getTime();
+      const endMs = end.getTime();
+
       return employees.map((emp) => {
         let totalSessionSeconds = 0;
         let totalIdleSeconds = 0;
         let longestIdleSeconds = 0;
 
         emp.sessions.forEach((session) => {
-          const sessionEnd = session.logoutTime ? session.logoutTime.getTime() : Date.now();
-          const sessionStart = session.loginTime.getTime();
-          totalSessionSeconds += (sessionEnd - sessionStart) / 1000;
+          // --- FIX Bug #2: Clamp session time to the requested date range ---
+          const rawStart = session.loginTime.getTime();
+          const rawEnd = session.logoutTime ? session.logoutTime.getTime() : Date.now();
+
+          // Clamp: only count the portion of the session that falls within [start, end]
+          const clampedStart = Math.max(rawStart, startMs);
+          const clampedEnd = Math.min(rawEnd, endMs);
+
+          if (clampedEnd > clampedStart) {
+            totalSessionSeconds += (clampedEnd - clampedStart) / 1000;
+          }
 
           session.idleLogs.forEach((log) => {
-            totalIdleSeconds += log.idleDurationSecs;
-            if (log.idleDurationSecs > longestIdleSeconds) {
-              longestIdleSeconds = log.idleDurationSecs;
+            // Only count idle logs that fall within the date range
+            const logTime = log.recordedAt.getTime();
+            if (logTime >= startMs && logTime <= endMs) {
+              totalIdleSeconds += log.idleDurationSecs;
+              if (log.idleDurationSecs > longestIdleSeconds) {
+                longestIdleSeconds = log.idleDurationSecs;
+              }
             }
           });
         });
