@@ -45,6 +45,12 @@ export class EmployeesController {
 
       if (!session) {
         await this.prisma.session.create({ data: { employeeId: employee.id } });
+      } else {
+        // --- HEARTBEAT TRACKING: Update lastSeen ---
+        await this.prisma.session.update({
+          where: { id: session.id },
+          data: { lastSeen: new Date() },
+        });
       }
 
       return {
@@ -62,6 +68,25 @@ export class EmployeesController {
   @Get()
   async getDashboardData(@Query('start') startStr?: string, @Query('end') endStr?: string) {
     try {
+      // --- AUTO-CLOSE GHOST SESSIONS (Heartbeat timeout = 3 mins) ---
+      const heartbeatThreshold = new Date(Date.now() - 3 * 60 * 1000);
+      const ghostSessions = await this.prisma.session.findMany({
+        where: {
+          logoutTime: null,
+          lastSeen: { lt: heartbeatThreshold },
+        },
+      });
+
+      if (ghostSessions.length > 0) {
+        console.log(`🧹 [GHOST] Auto-closing ${ghostSessions.length} ghost sessions (missed heartbeats)`);
+        for (const ghost of ghostSessions) {
+          await this.prisma.session.update({
+            where: { id: ghost.id },
+            data: { logoutTime: ghost.lastSeen }, // Close exactly at last known heartbeat
+          });
+        }
+      }
+
       const start = startStr ? new Date(startStr) : new Date(new Date().setHours(0, 0, 0, 0));
       const end = endStr ? new Date(endStr) : new Date(new Date().setHours(23, 59, 59, 999));
 

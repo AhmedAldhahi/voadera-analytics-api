@@ -30,6 +30,7 @@ model Session {
   employeeId  String
   loginTime   DateTime   @default(now())
   logoutTime  DateTime?  // Null means they are currently logged in
+  lastSeen    DateTime   @default(now()) // Updated every 60s via heartbeat
   
   // Relations
   employee    Employee   @relation(fields: [employeeId], references: [id])
