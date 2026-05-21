@@ -65,11 +65,14 @@ export class TrackingController {
 
     try {
       // 3. Smart Mapping: Check for both lowercase AND capitalized keys
-      const dataToInsert = logsArray.map(log => ({
-        tsUsername: log.username || log.Username,
-        url: log.url || log.Url || log.URL,
-        createdAt: new Date(log.timestamp || log.Timestamp),
-      }));
+      const dataToInsert = logsArray.map(log => {
+        const parsedDate = new Date(log.timestamp || log.Timestamp);
+        return {
+          tsUsername: log.username || log.Username,
+          url: log.url || log.Url || log.URL,
+          createdAt: isNaN(parsedDate.getTime()) ? new Date() : parsedDate,
+        };
+      });
 
       // 4. Save to Postgres
       await this.prisma.webLog.createMany({

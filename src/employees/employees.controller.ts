@@ -30,18 +30,31 @@ export class EmployeesController {
 
       if (staleSessions.length > 0) {
         console.log(`🧹 [STALE] Closing ${staleSessions.length} stale session(s) for ${username}`);
-        await this.prisma.session.updateMany({
-          where: {
-            id: { in: staleSessions.map(s => s.id) },
-          },
-          data: { logoutTime: new Date() },
-        });
+        await Promise.all(staleSessions.map(stale => 
+          this.prisma.session.update({
+            where: { id: stale.id },
+            data: { logoutTime: stale.lastSeen }, // FIX: Close at lastSeen to prevent fake hours
+          })
+        ));
       }
 
-      // Find or create a fresh session
+      // Find an open session
       let session = await this.prisma.session.findFirst({
         where: { employeeId: employee.id, logoutTime: null },
       });
+
+      // --- FIX: Prevent resurrecting ghost sessions from yesterday ---
+      if (session) {
+        const heartbeatThreshold = new Date(Date.now() - 5 * 60 * 1000); // 5 minutes missed
+        if (session.lastSeen < heartbeatThreshold) {
+          console.log(`🧹 [RESURRECTED] Closing dead session for ${username} at ${session.lastSeen}`);
+          await this.prisma.session.update({
+            where: { id: session.id },
+            data: { logoutTime: session.lastSeen }, // Close exactly when it died
+          });
+          session = null; // Force creation of a new session
+        }
+      }
 
       if (!session) {
         await this.prisma.session.create({ data: { employeeId: employee.id } });
@@ -79,12 +92,12 @@ export class EmployeesController {
 
       if (ghostSessions.length > 0) {
         console.log(`🧹 [GHOST] Auto-closing ${ghostSessions.length} ghost sessions (missed heartbeats)`);
-        for (const ghost of ghostSessions) {
-          await this.prisma.session.update({
+        await Promise.all(ghostSessions.map(ghost => 
+          this.prisma.session.update({
             where: { id: ghost.id },
             data: { logoutTime: ghost.lastSeen }, // Close exactly at last known heartbeat
-          });
-        }
+          })
+        ));
       }
 
       const start = startStr ? new Date(startStr) : new Date(new Date().setHours(0, 0, 0, 0));
