@@ -1,5 +1,6 @@
-import { Controller, Post, Body, Get, Param, Query } from '@nestjs/common';
+import { Controller, Post, Body, Get, Param, Query, UseGuards } from '@nestjs/common';
 import { PrismaService } from '../prisma.service'; 
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 @Controller()
 export class TrackingController {
@@ -89,6 +90,7 @@ export class TrackingController {
   }
 
   // 🔍 GET /weblogs/:username (Used by HR Modal)
+  @UseGuards(JwtAuthGuard)
   @Get('weblogs/:username')
   async getEmployeeWebLogs(
     @Param('username') username: string,

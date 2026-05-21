@@ -1,5 +1,6 @@
-import { Controller, Get, Patch, Param, Body, Query } from '@nestjs/common';
+import { Controller, Get, Patch, Param, Body, Query, UseGuards } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 @Controller('employees')
 export class EmployeesController {
@@ -78,6 +79,7 @@ export class EmployeesController {
   }
 
   // 📊 GET /employees (Used by the React Dashboard)
+  @UseGuards(JwtAuthGuard)
   @Get()
   async getDashboardData(@Query('start') startStr?: string, @Query('end') endStr?: string) {
     try {
@@ -181,6 +183,7 @@ export class EmployeesController {
   }
 
   // ✏️ PATCH /employees/:id (Used by HR to edit a user)
+  @UseGuards(JwtAuthGuard)
   @Patch(':id')
   async updateEmployee(
     @Param('id') id: string,
