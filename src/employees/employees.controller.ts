@@ -238,4 +238,94 @@ export class EmployeesController {
       return { status: 'Error', message: 'Could not fetch sessions.' };
     }
   }
+
+  // 📉 GET /employees/:id/daily-report (Used for CSV export of daily breakdown)
+  @UseGuards(JwtAuthGuard)
+  @Get(':id/daily-report')
+  async getEmployeeDailyReport(
+    @Param('id') id: string,
+    @Query('start') startStr?: string,
+    @Query('end') endStr?: string
+  ) {
+    try {
+      const start = startStr ? new Date(startStr) : new Date(new Date().setHours(0, 0, 0, 0));
+      const end = endStr ? new Date(endStr) : new Date(new Date().setHours(23, 59, 59, 999));
+
+      const sessions = await this.prisma.session.findMany({
+        where: {
+          employeeId: id,
+          loginTime: { lte: end },
+          OR: [
+            { logoutTime: { gte: start } },
+            { logoutTime: null },
+          ],
+        },
+        include: { idleLogs: true },
+      });
+
+      const dailyData: Record<string, {
+        totalSessionSeconds: number;
+        totalIdleSeconds: number;
+        longestIdleSeconds: number;
+      }> = {};
+
+      const startMs = start.getTime();
+      const endMs = end.getTime();
+
+      sessions.forEach(session => {
+        const rawStart = session.loginTime.getTime();
+        const rawEnd = session.logoutTime ? session.logoutTime.getTime() : Date.now();
+
+        const clampedStart = Math.max(rawStart, startMs);
+        const clampedEnd = Math.min(rawEnd, endMs);
+
+        if (clampedEnd > clampedStart) {
+          const dateStr = new Date(clampedStart).toISOString().split('T')[0];
+          
+          if (!dailyData[dateStr]) {
+            dailyData[dateStr] = { totalSessionSeconds: 0, totalIdleSeconds: 0, longestIdleSeconds: 0 };
+          }
+          dailyData[dateStr].totalSessionSeconds += (clampedEnd - clampedStart) / 1000;
+        }
+
+        session.idleLogs.forEach(log => {
+          const logTime = log.recordedAt.getTime();
+          if (logTime >= startMs && logTime <= endMs) {
+            const dateStr = log.recordedAt.toISOString().split('T')[0];
+            if (!dailyData[dateStr]) {
+              dailyData[dateStr] = { totalSessionSeconds: 0, totalIdleSeconds: 0, longestIdleSeconds: 0 };
+            }
+            dailyData[dateStr].totalIdleSeconds += log.idleDurationSecs;
+            if (log.idleDurationSecs > dailyData[dateStr].longestIdleSeconds) {
+              dailyData[dateStr].longestIdleSeconds = log.idleDurationSecs;
+            }
+          }
+        });
+      });
+
+      const formatTime = (totalSeconds: number) => {
+        const hrs = Math.floor(totalSeconds / 3600);
+        const mins = Math.floor((totalSeconds % 3600) / 60);
+        const secs = Math.floor(totalSeconds % 60);
+        return `${hrs}h ${mins}m ${secs}s`;
+      };
+
+      const result = Object.keys(dailyData).sort((a, b) => new Date(b).getTime() - new Date(a).getTime()).map(dateStr => {
+        const data = dailyData[dateStr];
+        const activeSeconds = Math.max(0, data.totalSessionSeconds - data.totalIdleSeconds);
+        return {
+          date: dateStr,
+          totalTime: formatTime(data.totalSessionSeconds),
+          activeTime: formatTime(activeSeconds),
+          idleTime: formatTime(data.totalIdleSeconds),
+          longestIdle: formatTime(data.longestIdleSeconds),
+        };
+      });
+
+      return { status: 'Success', data: result };
+    } catch (error) {
+      console.error('Daily Report Error:', error);
+      return { status: 'Error', message: 'Could not fetch daily report.' };
+    }
+  }
 }
