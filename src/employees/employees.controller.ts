@@ -205,4 +205,37 @@ export class EmployeesController {
       return { status: 'Error', message: 'Employee not found.' };
     }
   }
+
+  // 🕒 GET /employees/:id/sessions (Used by HR to view login/logout history)
+  @UseGuards(JwtAuthGuard)
+  @Get(':id/sessions')
+  async getEmployeeSessions(
+    @Param('id') id: string,
+    @Query('start') startStr?: string,
+    @Query('end') endStr?: string
+  ) {
+    try {
+      const start = startStr ? new Date(startStr) : new Date(new Date().setHours(0, 0, 0, 0));
+      const end = endStr ? new Date(endStr) : new Date(new Date().setHours(23, 59, 59, 999));
+
+      const sessions = await this.prisma.session.findMany({
+        where: {
+          employeeId: id,
+          loginTime: { lte: end },
+          OR: [
+            { logoutTime: { gte: start } },
+            { logoutTime: null },
+          ],
+        },
+        orderBy: {
+          loginTime: 'asc', // Chronological order
+        },
+      });
+
+      return { status: 'Success', data: sessions };
+    } catch (error) {
+      console.error('Sessions Error:', error);
+      return { status: 'Error', message: 'Could not fetch sessions.' };
+    }
+  }
 }
