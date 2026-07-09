@@ -67,14 +67,32 @@ export class EmployeesController {
         });
       }
 
+      // --- OFFICE CHECK-IN: Check 5:00 PM auto-revert ---
+      let inOfficeToday = employee.inOfficeToday;
+      if (inOfficeToday && employee.officeCheckInTime) {
+        const checkInDate = new Date(employee.officeCheckInTime);
+        const now = new Date();
+        
+        // Revert if checked in on a previous day OR if it is past 17:00 (5 PM) today
+        if (now.getDate() !== checkInDate.getDate() || now.getHours() >= 17 || now.getTime() - checkInDate.getTime() > 24 * 3600 * 1000) {
+          inOfficeToday = false;
+          await this.prisma.employee.update({
+            where: { id: employee.id },
+            data: { inOfficeToday: false, officeCheckOutTime: now },
+          });
+          console.log(`🏢 [OFFICE] 5:00 PM reached (or new day). Reverting ${username} to normal tracking.`);
+        }
+      }
+
       return {
-        idleLimit: employee.idleLimit,
+        idleLimit: inOfficeToday ? -1 : employee.idleLimit,
         forceLogoff: employee.forceLogoff,
+        inOfficeToday: inOfficeToday,
         serverTime: new Date().toISOString(),
       };
     } catch (error) {
       console.error('Settings Error:', error);
-      return { idleLimit: 900, forceLogoff: false, serverTime: new Date().toISOString() };
+      return { idleLimit: 900, forceLogoff: false, inOfficeToday: false, serverTime: new Date().toISOString() };
     }
   }
 
@@ -119,6 +137,15 @@ export class EmployeesController {
             },
             include: { idleLogs: true },
           },
+          securityAlerts: {
+            where: {
+              timestamp: {
+                gte: start,
+                lte: end,
+              },
+            },
+            orderBy: { timestamp: 'desc' },
+          },
         },
       });
 
@@ -137,6 +164,29 @@ export class EmployeesController {
         let totalIdleSeconds = 0;
         let longestIdleSeconds = 0;
 
+        // Calculate office block if checked in during this period
+        let officeStartMs = 0;
+        let officeEndMs = 0;
+        if (emp.officeCheckInTime) {
+          const checkInMs = emp.officeCheckInTime.getTime();
+          if (checkInMs >= startMs && checkInMs <= endMs) {
+            officeStartMs = checkInMs;
+            let checkOutMs = emp.officeCheckOutTime ? emp.officeCheckOutTime.getTime() : Date.now();
+            
+            // If still checked in and past 5 PM today, cap at 5 PM (17:00)
+            const fivePmThatDay = new Date(emp.officeCheckInTime);
+            fivePmThatDay.setHours(17, 0, 0, 0);
+            if (!emp.officeCheckOutTime && Date.now() > fivePmThatDay.getTime()) {
+              checkOutMs = fivePmThatDay.getTime();
+            }
+            officeEndMs = Math.min(checkOutMs, endMs);
+
+            if (officeEndMs > officeStartMs) {
+              totalSessionSeconds += (officeEndMs - officeStartMs) / 1000;
+            }
+          }
+        }
+
         emp.sessions.forEach((session) => {
           // --- FIX Bug #2: Clamp session time to the requested date range ---
           const rawStart = session.loginTime.getTime();
@@ -147,16 +197,29 @@ export class EmployeesController {
           const clampedEnd = Math.min(rawEnd, endMs);
 
           if (clampedEnd > clampedStart) {
-            totalSessionSeconds += (clampedEnd - clampedStart) / 1000;
+            if (officeEndMs > officeStartMs) {
+              if (clampedStart < officeStartMs) {
+                const beforeEnd = Math.min(clampedEnd, officeStartMs);
+                if (beforeEnd > clampedStart) totalSessionSeconds += (beforeEnd - clampedStart) / 1000;
+              }
+              if (clampedEnd > officeEndMs) {
+                const afterStart = Math.max(clampedStart, officeEndMs);
+                if (clampedEnd > afterStart) totalSessionSeconds += (clampedEnd - afterStart) / 1000;
+              }
+            } else {
+              totalSessionSeconds += (clampedEnd - clampedStart) / 1000;
+            }
           }
 
           session.idleLogs.forEach((log) => {
             // Only count idle logs that fall within the date range
             const logTime = log.recordedAt.getTime();
             if (logTime >= startMs && logTime <= endMs) {
-              totalIdleSeconds += log.idleDurationSecs;
-              if (log.idleDurationSecs > longestIdleSeconds) {
-                longestIdleSeconds = log.idleDurationSecs;
+              if (!(officeEndMs > officeStartMs && logTime >= officeStartMs && logTime <= officeEndMs)) {
+                totalIdleSeconds += log.idleDurationSecs;
+                if (log.idleDurationSecs > longestIdleSeconds) {
+                  longestIdleSeconds = log.idleDurationSecs;
+                }
               }
             }
           });
@@ -173,6 +236,12 @@ export class EmployeesController {
           activeTime: formatTime(activeSeconds),
           idleTime: formatTime(totalIdleSeconds),
           longestIdle: formatTime(longestIdleSeconds),
+          inOfficeToday: emp.inOfficeToday,
+          officeCheckInTime: emp.officeCheckInTime ? emp.officeCheckInTime.toISOString() : null,
+          officeCheckOutTime: emp.officeCheckOutTime ? emp.officeCheckOutTime.toISOString() : null,
+          idleLimit: emp.idleLimit,
+          forceLogoff: emp.forceLogoff,
+          securityAlerts: emp.securityAlerts,
         };
       });
     } catch (error) {
@@ -187,9 +256,30 @@ export class EmployeesController {
   @Patch(':id')
   async updateEmployee(
     @Param('id') id: string,
-    @Body() body: { name?: string; department?: string; idleLimit?: number; forceLogoff?: boolean },
+    @Body() body: {
+      name?: string;
+      department?: string;
+      idleLimit?: number;
+      forceLogoff?: boolean;
+      inOfficeToday?: boolean;
+      officeCheckInTime?: string;
+      officeCheckOutTime?: string;
+    },
   ) {
     try {
+      let officeData: any = {};
+      if (body.inOfficeToday !== undefined) {
+        officeData.inOfficeToday = body.inOfficeToday;
+        if (body.inOfficeToday === true) {
+          officeData.officeCheckInTime = body.officeCheckInTime ? new Date(body.officeCheckInTime) : new Date();
+          officeData.officeCheckOutTime = null;
+          console.log(`🏢 [OFFICE] Employee ${id} checked in at ${officeData.officeCheckInTime}`);
+        } else {
+          officeData.officeCheckOutTime = body.officeCheckOutTime ? new Date(body.officeCheckOutTime) : new Date();
+          console.log(`🏢 [OFFICE] Employee ${id} unchecked early at ${officeData.officeCheckOutTime}`);
+        }
+      }
+
       const updated = await this.prisma.employee.update({
         where: { id },
         data: {
@@ -197,6 +287,7 @@ export class EmployeesController {
           ...(body.department && { department: body.department }),
           ...(body.idleLimit !== undefined && { idleLimit: body.idleLimit }),
           ...(body.forceLogoff !== undefined && { forceLogoff: body.forceLogoff }),
+          ...officeData,
         },
       });
       return { status: 'Success', data: updated };
@@ -251,6 +342,7 @@ export class EmployeesController {
       const start = startStr ? new Date(startStr) : new Date(new Date().setHours(0, 0, 0, 0));
       const end = endStr ? new Date(endStr) : new Date(new Date().setHours(23, 59, 59, 999));
 
+      const emp = await this.prisma.employee.findUnique({ where: { id } });
       const sessions = await this.prisma.session.findMany({
         where: {
           employeeId: id,
@@ -272,6 +364,30 @@ export class EmployeesController {
       const startMs = start.getTime();
       const endMs = end.getTime();
 
+      // Calculate office block if checked in during this period
+      let officeStartMs = 0;
+      let officeEndMs = 0;
+      if (emp && emp.officeCheckInTime) {
+        const checkInMs = emp.officeCheckInTime.getTime();
+        if (checkInMs >= startMs && checkInMs <= endMs) {
+          officeStartMs = checkInMs;
+          let checkOutMs = emp.officeCheckOutTime ? emp.officeCheckOutTime.getTime() : Date.now();
+          const fivePmThatDay = new Date(emp.officeCheckInTime);
+          fivePmThatDay.setHours(17, 0, 0, 0);
+          if (!emp.officeCheckOutTime && Date.now() > fivePmThatDay.getTime()) {
+            checkOutMs = fivePmThatDay.getTime();
+          }
+          officeEndMs = Math.min(checkOutMs, endMs);
+          if (officeEndMs > officeStartMs) {
+            const dateStr = new Date(officeStartMs).toISOString().split('T')[0];
+            if (!dailyData[dateStr]) {
+              dailyData[dateStr] = { totalSessionSeconds: 0, totalIdleSeconds: 0, longestIdleSeconds: 0 };
+            }
+            dailyData[dateStr].totalSessionSeconds += (officeEndMs - officeStartMs) / 1000;
+          }
+        }
+      }
+
       sessions.forEach(session => {
         const rawStart = session.loginTime.getTime();
         const rawEnd = session.logoutTime ? session.logoutTime.getTime() : Date.now();
@@ -281,23 +397,35 @@ export class EmployeesController {
 
         if (clampedEnd > clampedStart) {
           const dateStr = new Date(clampedStart).toISOString().split('T')[0];
-          
           if (!dailyData[dateStr]) {
             dailyData[dateStr] = { totalSessionSeconds: 0, totalIdleSeconds: 0, longestIdleSeconds: 0 };
           }
-          dailyData[dateStr].totalSessionSeconds += (clampedEnd - clampedStart) / 1000;
+          if (officeEndMs > officeStartMs) {
+            if (clampedStart < officeStartMs) {
+              const beforeEnd = Math.min(clampedEnd, officeStartMs);
+              if (beforeEnd > clampedStart) dailyData[dateStr].totalSessionSeconds += (beforeEnd - clampedStart) / 1000;
+            }
+            if (clampedEnd > officeEndMs) {
+              const afterStart = Math.max(clampedStart, officeEndMs);
+              if (clampedEnd > afterStart) dailyData[dateStr].totalSessionSeconds += (clampedEnd - afterStart) / 1000;
+            }
+          } else {
+            dailyData[dateStr].totalSessionSeconds += (clampedEnd - clampedStart) / 1000;
+          }
         }
 
         session.idleLogs.forEach(log => {
           const logTime = log.recordedAt.getTime();
           if (logTime >= startMs && logTime <= endMs) {
-            const dateStr = log.recordedAt.toISOString().split('T')[0];
-            if (!dailyData[dateStr]) {
-              dailyData[dateStr] = { totalSessionSeconds: 0, totalIdleSeconds: 0, longestIdleSeconds: 0 };
-            }
-            dailyData[dateStr].totalIdleSeconds += log.idleDurationSecs;
-            if (log.idleDurationSecs > dailyData[dateStr].longestIdleSeconds) {
-              dailyData[dateStr].longestIdleSeconds = log.idleDurationSecs;
+            if (!(officeEndMs > officeStartMs && logTime >= officeStartMs && logTime <= officeEndMs)) {
+              const dateStr = log.recordedAt.toISOString().split('T')[0];
+              if (!dailyData[dateStr]) {
+                dailyData[dateStr] = { totalSessionSeconds: 0, totalIdleSeconds: 0, longestIdleSeconds: 0 };
+              }
+              dailyData[dateStr].totalIdleSeconds += log.idleDurationSecs;
+              if (log.idleDurationSecs > dailyData[dateStr].longestIdleSeconds) {
+                dailyData[dateStr].longestIdleSeconds = log.idleDurationSecs;
+              }
             }
           }
         });

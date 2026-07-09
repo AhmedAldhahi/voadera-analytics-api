@@ -13,16 +13,20 @@ datasource db {
 
 
 model Employee {
-  id           String    @id @default(uuid())
-  tsUsername   String    @unique // Their Windows/TSplus login name
-  fullName     String
-  department   String?
-  idleLimit    Int       @default(900)    // Seconds before forced logoff (default 15 min)
-  forceLogoff  Boolean   @default(false)  // HR "Remote Kill" button
-  createdAt    DateTime  @default(now())
+  id                 String    @id @default(uuid())
+  tsUsername         String    @unique // Their Windows/TSplus login name
+  fullName           String
+  department         String?
+  idleLimit          Int       @default(900)    // Seconds before forced logoff (default 15 min)
+  forceLogoff        Boolean   @default(false)  // HR "Remote Kill" button
+  inOfficeToday      Boolean   @default(false)  // Admin office checkmark
+  officeCheckInTime  DateTime?                  // When admin checked the box (or backdated)
+  officeCheckOutTime DateTime?                  // If unchecked early or reached 5 PM
+  createdAt          DateTime  @default(now())
   
   // Relations
-  sessions     Session[]
+  sessions           Session[]
+  securityAlerts     SecurityAlert[]
 }
 
 model Session {
@@ -55,4 +59,20 @@ model WebLog {
 
   // Create a relation to your Employee table if you want, 
   // or just filter by tsUsername later.
+}
+
+model SecurityAlert {
+  id                  String   @id @default(uuid())
+  tsUsername          String
+  alertType           String   // "AUTOMATED_MOUSE_JIGGLER" or "JIGGLER_DAY_SUMMARY"
+  severity            String?  // "LOW", "MEDIUM", "HIGH"
+  reason              String?
+  activeWindowAtFlag  String?
+  timestamp           DateTime @default(now())
+  durationSeconds     Int?
+  totalJigglerMinutes Int?
+  totalGenuineMinutes Int?
+  timelineJson        String?  // JSON string of [{type, at}]
+  
+  employee            Employee? @relation(fields: [tsUsername], references: [tsUsername])
 }

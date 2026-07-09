@@ -144,4 +144,55 @@ export class TrackingController {
       return { status: 'Error', message: 'Failed to purge logs.' };
     }
   }
-}
+
+  // 🚨 POST /security-alerts (Used by the C# Agent for mouse jiggler detection)
+  @Post('security-alerts')
+  async handleSecurityAlert(@Body() body: {
+    username: string;
+    alertType: string;
+    severity?: string;
+    reason?: string;
+    activeWindowAtFlag?: string;
+    timestamp?: string;
+    durationSeconds?: number;
+    flaggedForDay?: boolean;
+    totalJigglerMinutes?: number;
+    totalGenuineMinutes?: number;
+    timeline?: { type: string; at: string }[];
+  }) {
+    console.log(`🚨 [SECURITY ALERT] User: ${body.username} | Type: ${body.alertType} | Severity: ${body.severity || 'N/A'}`);
+
+    try {
+      // Find or create employee
+      let employee = await this.prisma.employee.findUnique({
+        where: { tsUsername: body.username },
+      });
+      if (!employee) {
+        employee = await this.prisma.employee.create({
+          data: { tsUsername: body.username, fullName: body.username },
+        });
+      }
+
+      await this.prisma.securityAlert.create({
+        data: {
+          tsUsername: body.username,
+          alertType: body.alertType,
+          severity: body.severity || null,
+          reason: body.reason || null,
+          activeWindowAtFlag: body.activeWindowAtFlag || null,
+          timestamp: body.timestamp ? new Date(body.timestamp) : new Date(),
+          durationSeconds: body.durationSeconds || null,
+          totalJigglerMinutes: body.totalJigglerMinutes || null,
+          totalGenuineMinutes: body.totalGenuineMinutes || null,
+          timelineJson: body.timeline ? JSON.stringify(body.timeline) : null,
+        },
+      });
+
+      console.log(`✅ [SECURITY] Alert saved for ${body.username}`);
+      return { status: 'Success', message: 'Security alert logged.' };
+    } catch (error) {
+      console.error('❌ [SECURITY] Database Error:', error);
+      return { status: 'Error', message: 'Failed to save security alert.' };
+    }
+  }
+}
