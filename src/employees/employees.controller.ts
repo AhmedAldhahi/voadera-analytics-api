@@ -67,20 +67,21 @@ export class EmployeesController {
         });
       }
 
-      // --- OFFICE CHECK-IN: Check 5:00 PM auto-revert ---
+      // --- OFFICE CHECK-IN: Check 14-hour auto-revert ---
       let inOfficeToday = employee.inOfficeToday;
       if (inOfficeToday && employee.officeCheckInTime) {
         const checkInDate = new Date(employee.officeCheckInTime);
         const now = new Date();
         
-        // Revert if checked in on a previous day OR if it is past 17:00 (5 PM) today
-        if (now.getDate() !== checkInDate.getDate() || now.getHours() >= 17 || now.getTime() - checkInDate.getTime() > 24 * 3600 * 1000) {
+        // Revert if more than 14 hours have elapsed since check-in time (or >14h old)
+        const hoursSinceCheckIn = (now.getTime() - checkInDate.getTime()) / (1000 * 3600);
+        if (hoursSinceCheckIn > 14 || hoursSinceCheckIn < -12) {
           inOfficeToday = false;
           await this.prisma.employee.update({
             where: { id: employee.id },
             data: { inOfficeToday: false, officeCheckOutTime: now },
           });
-          console.log(`🏢 [OFFICE] 5:00 PM reached (or new day). Reverting ${username} to normal tracking.`);
+          console.log(`🏢 [OFFICE] 14+ hours elapsed since check-in. Reverting ${username} to normal tracking.`);
         }
       }
 
@@ -173,11 +174,9 @@ export class EmployeesController {
             officeStartMs = checkInMs;
             let checkOutMs = emp.officeCheckOutTime ? emp.officeCheckOutTime.getTime() : Date.now();
             
-            // If still checked in and past 5 PM today, cap at 5 PM (17:00)
-            const fivePmThatDay = new Date(emp.officeCheckInTime);
-            fivePmThatDay.setHours(17, 0, 0, 0);
-            if (!emp.officeCheckOutTime && Date.now() > fivePmThatDay.getTime()) {
-              checkOutMs = fivePmThatDay.getTime();
+            // If still checked in after 14 hours, cap active office time at 12 hours
+            if (!emp.officeCheckOutTime && (Date.now() - checkInMs) > 14 * 3600 * 1000) {
+              checkOutMs = checkInMs + 12 * 3600 * 1000;
             }
             officeEndMs = Math.min(checkOutMs, endMs);
 
