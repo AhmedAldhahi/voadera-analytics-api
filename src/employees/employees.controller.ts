@@ -67,21 +67,23 @@ export class EmployeesController {
         });
       }
 
-      // --- OFFICE CHECK-IN: Check 14-hour auto-revert ---
+      // --- OFFICE CHECK-IN: Check 5:00 PM Jordan time (Asia/Amman) auto-revert ---
       let inOfficeToday = employee.inOfficeToday;
       if (inOfficeToday && employee.officeCheckInTime) {
         const checkInDate = new Date(employee.officeCheckInTime);
         const now = new Date();
         
-        // Revert if more than 14 hours have elapsed since check-in time (or >14h old)
-        const hoursSinceCheckIn = (now.getTime() - checkInDate.getTime()) / (1000 * 3600);
-        if (hoursSinceCheckIn > 14 || hoursSinceCheckIn < -12) {
+        const jordanNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Amman' }));
+        const jordanCheckIn = new Date(checkInDate.toLocaleString('en-US', { timeZone: 'Asia/Amman' }));
+
+        // Revert if it is past 5:00 PM (17:00) in Jordan time today, OR if checked in on a previous day in Jordan time
+        if (jordanNow.getDate() !== jordanCheckIn.getDate() || jordanNow.getHours() >= 17 || (now.getTime() - checkInDate.getTime()) > 24 * 3600 * 1000) {
           inOfficeToday = false;
           await this.prisma.employee.update({
             where: { id: employee.id },
             data: { inOfficeToday: false, officeCheckOutTime: now },
           });
-          console.log(`🏢 [OFFICE] 14+ hours elapsed since check-in. Reverting ${username} to normal tracking.`);
+          console.log(`🏢 [OFFICE] 5:00 PM Jordan time reached (or new day). Reverting ${username} to normal tracking.`);
         }
       }
 
@@ -174,9 +176,16 @@ export class EmployeesController {
             officeStartMs = checkInMs;
             let checkOutMs = emp.officeCheckOutTime ? emp.officeCheckOutTime.getTime() : Date.now();
             
-            // If still checked in after 14 hours, cap active office time at 12 hours
-            if (!emp.officeCheckOutTime && (Date.now() - checkInMs) > 14 * 3600 * 1000) {
-              checkOutMs = checkInMs + 12 * 3600 * 1000;
+            // Cap active office time at 5:00 PM Jordan time (17:00 Asia/Amman = 14:00 UTC) on that check-in day
+            const fivePmJordanUtc = new Date(Date.UTC(
+              emp.officeCheckInTime.getUTCFullYear(),
+              emp.officeCheckInTime.getUTCMonth(),
+              emp.officeCheckInTime.getUTCDate(),
+              14, 0, 0, 0
+            )).getTime();
+
+            if (!emp.officeCheckOutTime && Date.now() > fivePmJordanUtc) {
+              checkOutMs = fivePmJordanUtc;
             }
             officeEndMs = Math.min(checkOutMs, endMs);
 
