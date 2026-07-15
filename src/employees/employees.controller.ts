@@ -123,6 +123,25 @@ export class EmployeesController {
         ));
       }
 
+      // --- AUTO-CLEAR STALE OFFICE FLAGS (from previous days) ---
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      const staleOfficeEmployees = await this.prisma.employee.findMany({
+        where: {
+          inOfficeToday: true,
+          officeCheckInTime: { lt: todayStart },
+        },
+      });
+      if (staleOfficeEmployees.length > 0) {
+        console.log(`🏢 [OFFICE] Auto-clearing ${staleOfficeEmployees.length} stale office flags from previous days`);
+        await this.prisma.employee.updateMany({
+          where: {
+            id: { in: staleOfficeEmployees.map(e => e.id) },
+          },
+          data: { inOfficeToday: false },
+        });
+      }
+
       const start = startStr ? new Date(startStr) : new Date(new Date().setHours(0, 0, 0, 0));
       const end = endStr ? new Date(endStr) : new Date(new Date().setHours(23, 59, 59, 999));
 
