@@ -27,6 +27,7 @@ model Employee {
   // Relations
   sessions           Session[]
   securityAlerts     SecurityAlert[]
+  officeLogs         OfficeLog[]
 }
 
 model Session {
@@ -75,4 +76,14 @@ model SecurityAlert {
   timelineJson        String?  // JSON string of [{type, at}]
   
   employee            Employee? @relation(fields: [tsUsername], references: [tsUsername])
+}
+
+model OfficeLog {
+  id         String    @id @default(uuid())
+  employeeId String
+  checkIn    DateTime
+  checkOut   DateTime?
+  
+  // Relations
+  employee   Employee  @relation(fields: [employeeId], references: [id])
 }

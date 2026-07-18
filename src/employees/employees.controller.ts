@@ -83,6 +83,18 @@ export class EmployeesController {
             where: { id: employee.id },
             data: { inOfficeToday: false, officeCheckOutTime: now },
           });
+
+          // Cap the active OfficeLog in history
+          const activeLog = await this.prisma.officeLog.findFirst({
+            where: { employeeId: employee.id, checkOut: null }
+          });
+          if (activeLog) {
+            await this.prisma.officeLog.update({
+              where: { id: activeLog.id },
+              data: { checkOut: now }
+            });
+          }
+
           console.log(`🏢 [OFFICE] 5:00 PM Jordan time reached (or new day). Reverting ${username} to normal tracking.`);
         }
       }
@@ -145,19 +157,26 @@ export class EmployeesController {
       const start = startStr ? new Date(startStr) : new Date(new Date().setHours(0, 0, 0, 0));
       const end = endStr ? new Date(endStr) : new Date(new Date().setHours(23, 59, 59, 999));
 
-      // --- FIX Bug #3: Include sessions that OVERLAP with the date range ---
-      // A session overlaps if: loginTime <= end AND (logoutTime >= start OR logoutTime IS NULL)
       const employees = await this.prisma.employee.findMany({
         include: {
           sessions: {
             where: {
-              loginTime: { lte: end },
               OR: [
-                { logoutTime: { gte: start } },
-                { logoutTime: null },
+                { loginTime: { gte: start, lte: end } },
+                { logoutTime: { gte: start, lte: end } },
+                { loginTime: { lte: start }, logoutTime: null },
               ],
             },
             include: { idleLogs: true },
+          },
+          officeLogs: {
+            where: {
+              OR: [
+                { checkIn: { gte: start, lte: end } },
+                { checkOut: { gte: start, lte: end } },
+                { checkIn: { lte: start }, checkOut: null },
+              ],
+            },
           },
           securityAlerts: {
             where: {
@@ -186,70 +205,70 @@ export class EmployeesController {
         let totalIdleSeconds = 0;
         let longestIdleSeconds = 0;
 
-        // Calculate office block if checked in during this period
-        let officeStartMs = 0;
-        let officeEndMs = 0;
-        if (emp.officeCheckInTime) {
-          const checkInMs = emp.officeCheckInTime.getTime();
-          if (checkInMs >= startMs && checkInMs <= endMs) {
-            officeStartMs = checkInMs;
-            let checkOutMs = emp.officeCheckOutTime ? emp.officeCheckOutTime.getTime() : Date.now();
-            
-            // Cap active office time at 5:00 PM Jordan time (17:00 Asia/Amman = 14:00 UTC) on that check-in day
-            const fivePmJordanUtc = new Date(Date.UTC(
-              emp.officeCheckInTime.getUTCFullYear(),
-              emp.officeCheckInTime.getUTCMonth(),
-              emp.officeCheckInTime.getUTCDate(),
-              14, 0, 0, 0
-            )).getTime();
+        // Calculate office block from all historical office logs in this period
+        let officeBlocks: { start: number; end: number }[] = [];
+        emp.officeLogs.forEach(log => {
+          const checkInMs = log.checkIn.getTime();
+          let checkOutMs = log.checkOut ? log.checkOut.getTime() : Date.now();
+          
+          // Cap active office time at 5:00 PM Jordan time (17:00 Asia/Amman = 14:00 UTC) on that check-in day
+          const fivePmJordanUtc = new Date(Date.UTC(
+            log.checkIn.getUTCFullYear(),
+            log.checkIn.getUTCMonth(),
+            log.checkIn.getUTCDate(),
+            14, 0, 0, 0
+          )).getTime();
 
-            if (!emp.officeCheckOutTime && Date.now() > fivePmJordanUtc) {
-              checkOutMs = fivePmJordanUtc;
-            }
-            officeEndMs = Math.min(checkOutMs, endMs);
-
-            if (officeEndMs > officeStartMs) {
-              totalSessionSeconds += (officeEndMs - officeStartMs) / 1000;
-            }
+          if (!log.checkOut && Date.now() > fivePmJordanUtc) {
+            checkOutMs = fivePmJordanUtc;
           }
-        }
+          
+          const blockStartMs = Math.max(checkInMs, startMs);
+          const blockEndMs = Math.min(checkOutMs, endMs);
+          
+          if (blockEndMs > blockStartMs) {
+            officeBlocks.push({ start: blockStartMs, end: blockEndMs });
+            totalSessionSeconds += (blockEndMs - blockStartMs) / 1000;
+          }
+        });
 
         emp.sessions.forEach((session) => {
           // --- FIX Bug #2: Clamp session time to the requested date range ---
           const rawStart = session.loginTime.getTime();
           const rawEnd = session.logoutTime ? session.logoutTime.getTime() : Date.now();
-
-          // Clamp: only count the portion of the session that falls within [start, end]
           const clampedStart = Math.max(rawStart, startMs);
           const clampedEnd = Math.min(rawEnd, endMs);
 
           if (clampedEnd > clampedStart) {
-            if (officeEndMs > officeStartMs) {
-              if (clampedStart < officeStartMs) {
-                const beforeEnd = Math.min(clampedEnd, officeStartMs);
-                if (beforeEnd > clampedStart) totalSessionSeconds += (beforeEnd - clampedStart) / 1000;
+            // Subtract overlaps with ANY office block to prevent double counting
+            let sessionActiveSeconds = (clampedEnd - clampedStart) / 1000;
+            
+            officeBlocks.forEach(block => {
+              const overlapStart = Math.max(clampedStart, block.start);
+              const overlapEnd = Math.min(clampedEnd, block.end);
+              if (overlapEnd > overlapStart) {
+                sessionActiveSeconds -= (overlapEnd - overlapStart) / 1000;
               }
-              if (clampedEnd > officeEndMs) {
-                const afterStart = Math.max(clampedStart, officeEndMs);
-                if (clampedEnd > afterStart) totalSessionSeconds += (clampedEnd - afterStart) / 1000;
-              }
-            } else {
-              totalSessionSeconds += (clampedEnd - clampedStart) / 1000;
+            });
+            
+            if (sessionActiveSeconds > 0) {
+               totalSessionSeconds += sessionActiveSeconds;
             }
-          }
 
-          session.idleLogs.forEach((log) => {
-            // Only count idle logs that fall within the date range
-            const logTime = log.recordedAt.getTime();
-            if (logTime >= startMs && logTime <= endMs) {
-              if (!(officeEndMs > officeStartMs && logTime >= officeStartMs && logTime <= officeEndMs)) {
-                totalIdleSeconds += log.idleDurationSecs;
-                if (log.idleDurationSecs > longestIdleSeconds) {
-                  longestIdleSeconds = log.idleDurationSecs;
+            session.idleLogs.forEach((idleLog) => {
+              const logTime = idleLog.recordedAt.getTime();
+              if (logTime >= startMs && logTime <= endMs) {
+                // Ignore idle penalties if the log falls inside ANY office block
+                const inOffice = officeBlocks.some(block => logTime >= block.start && logTime <= block.end);
+                if (!inOffice) {
+                  totalIdleSeconds += idleLog.idleDurationSecs;
+                  if (idleLog.idleDurationSecs > longestIdleSeconds) {
+                    longestIdleSeconds = idleLog.idleDurationSecs;
+                  }
                 }
               }
-            }
-          });
+            });
+          }
         });
 
         const activeSeconds = Math.max(0, totalSessionSeconds - totalIdleSeconds);
@@ -300,9 +319,36 @@ export class EmployeesController {
         if (body.inOfficeToday === true) {
           officeData.officeCheckInTime = body.officeCheckInTime ? new Date(body.officeCheckInTime) : new Date();
           officeData.officeCheckOutTime = null;
+          
+          const emp = await this.prisma.employee.findUnique({ where: { id } });
+          if (!emp?.inOfficeToday) {
+            await this.prisma.officeLog.create({
+              data: { employeeId: id, checkIn: officeData.officeCheckInTime }
+            });
+          } else {
+            const activeLog = await this.prisma.officeLog.findFirst({
+              where: { employeeId: id, checkOut: null }
+            });
+            if (activeLog) {
+              await this.prisma.officeLog.update({
+                where: { id: activeLog.id },
+                data: { checkIn: officeData.officeCheckInTime }
+              });
+            }
+          }
           console.log(`🏢 [OFFICE] Employee ${id} checked in at ${officeData.officeCheckInTime}`);
         } else {
           officeData.officeCheckOutTime = body.officeCheckOutTime ? new Date(body.officeCheckOutTime) : new Date();
+          
+          const activeLog = await this.prisma.officeLog.findFirst({
+            where: { employeeId: id, checkOut: null }
+          });
+          if (activeLog) {
+            await this.prisma.officeLog.update({
+              where: { id: activeLog.id },
+              data: { checkOut: officeData.officeCheckOutTime }
+            });
+          }
           console.log(`🏢 [OFFICE] Employee ${id} unchecked early at ${officeData.officeCheckOutTime}`);
         }
       }
